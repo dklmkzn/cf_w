@@ -1,4 +1,5 @@
 export default {
+  
   async fetch(request, env) {
     console.log('UID value:(', env.UID,')');
     const url = new URL(request.url);
