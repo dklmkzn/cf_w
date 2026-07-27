@@ -1,77 +1,56 @@
-// worker.js – Cloudflare Worker для Long Polling
-// Переменные окружения: BOT_TOKEN, AUTH_TOKEN
-
 export default {
   async fetch(request, env) {
+    console.log('UID value:(', env.UID,')');
     const url = new URL(request.url);
-    const path = url.pathname;
-
-    // Только POST на /poll
-    if (request.method !== 'POST' || path !== '/poll') {
-      return new Response('Not found', { status: 404 });
+    if (request.method !== 'POST' || url.pathname !== '/poll') {
+      return new Response('Forbidden', { status: 403 });
     }
-
-    // Проверка аутентификации
-    const authHeader = request.headers.get('X-Auth-Token');
-    if (!authHeader || authHeader !== env.AUTH_TOKEN) {
-      return new Response('Unauthorized', { status: 401 });
-    }
-
-    // Читаем тело запроса
-    let offset = 0;
-    let chatId = null;
+    let body;
     try {
-      const body = await request.json();
-      offset = body.offset || 0;
-      chatId = body.chat_id || null;
+      body = await request.json();
     } catch {
-      return new Response('Invalid JSON', { status: 400 });
+      return new Response('Forbidden', { status: 403 });
     }
-
-    // Выполняем getUpdates
-    const updates = await getUpdates(env.BOT_TOKEN, offset, 9);
-
-    // Вычисляем новый offset (последний update_id + 1)
-    let newOffset = offset;
+    const { offset, info, timeout } = body;
+    if (!info || info.length < 9) {
+      return new Response('Forbidden', { status: 403 });
+    }
+    const last8 = info.slice(-8);
+    const colonIndex = env.UID.indexOf(':');
+    if (colonIndex === -1 || env.UID.length < colonIndex + 9) {
+      return new Response('Forbidden', { status: 403 });
+    }
+    const first8AfterColon = env.UID.slice(colonIndex + 1, colonIndex + 9);
+    if (last8 !== first8AfterColon) {
+      return new Response('Forbidden', { status: 403 });
+    }
+    const first9 = info.slice(0, 9);
+    const uid = env.UID.replace(':', first9);
+    const timeoutSec = timeout || 9;
+    const updates = await getUpdates(uid, offset || 0, timeoutSec, env.entity);
+    let newOffset = offset || 0;
     if (updates && updates.length > 0) {
-      const lastUpdateId = updates[updates.length - 1].update_id;
-      newOffset = lastUpdateId + 1;
+      newOffset = updates[updates.length - 1].update_id + 1;
     }
-
-    // Возвращаем результат
-    return new Response(JSON.stringify({
-      ok: true,
-      updates,
-      new_offset: newOffset
-    }), {
+    return new Response(JSON.stringify({ updates, new_offset: newOffset }), {
       headers: { 'Content-Type': 'application/json' }
     });
   }
 };
 
-// Вспомогательная функция для вызова getUpdates
-async function getUpdates(token, offset, timeout) {
-  const url = `https://api.telegram.org/bot${token}/getUpdates`;
-  const params = {
-    offset: offset,
-    timeout: timeout,
-    limit: 100
-  };
+
+async function getUpdates(uid, offset, timeout, entity) {
+  const url = `${entity}/${uid}/getUpdates`;
   try {
     const resp = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(params)
+      body: JSON.stringify({ offset, timeout, limit: 100 })
     });
     const data = await resp.json();
-    if (data.ok) {
-      return data.result || [];
-    } else {
-      console.error('Telegram API error:', data.description);
-      return [];
-    }
-  } catch (e) {
-    console.error('getUpdates error:', e);
+    if (data.ok) return data.result || [];
+    return [];
+  } catch {
     return [];
   }
 }
